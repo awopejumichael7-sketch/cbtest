@@ -77,13 +77,16 @@ async function publishExam(o, e, bank) {
   await b.commit(); return id;
 }
 const DEMO_Q = [['Physics', 'What is the SI unit of force?', 'Joule', 'Newton', 'Watt', 'Pascal', 'B', 'Force = mass × acceleration, measured in newtons.', 'easy'], ['Physics', 'Acceleration is the rate of change of…', 'distance', 'speed', 'velocity', 'mass', 'C', 'Acceleration is the rate of change of velocity with time.', 'medium'], ['Physics', 'A body at constant velocity has net force…', 'Zero', 'Increasing', 'Decreasing', 'Equal to weight', 'A', "Newton's first law.", 'medium'], ['Mathematics', 'Solve 2x + 6 = 14', '2', '4', '6', '8', 'B', '2x = 8, so x = 4.', 'easy'], ['Mathematics', 'What is 15% of 200?', '20', '25', '30', '35', 'C', '0.15 × 200 = 30.', 'easy'], ['Chemistry', 'Chemical symbol for sodium?', 'S', 'So', 'Na', 'Sd', 'C', 'From Latin natrium.', 'easy'], ['English', 'Choose the synonym of "rapid"', 'Slow', 'Quick', 'Heavy', 'Quiet', 'B', 'Rapid means quick.', 'easy']];
-async function seedDemo(o, adminUid) {
-  const b = writeBatch(db);
-  DEMO_Q.forEach(([s, t, a, bb, c, d, ans, ex, df]) => b.set(doc(col(`organizations/${o}/questions`)), { organizationId: o, subject: s, topic: 'Demo', class: 'SS2', difficulty: df, type: 'mcq', text: t + ' [DEMO]', a, b: bb, c, d, answer: ans, explanation: ex, marks: 1, status: 'active', createdBy: adminUid, createdAt: serverTimestamp() }));
+async function seedDemo(o, adminUid) { // write-only: the super admin must never read an organization's question bank
+  const b = writeBatch(db), bank = [];
+  DEMO_Q.forEach(([s, t, a, bb, c, d, ans, ex, df]) => {
+    const r = doc(col(`organizations/${o}/questions`));
+    const q = { organizationId: o, subject: s, topic: 'Demo', class: 'SS2', difficulty: df, type: 'mcq', text: t + ' [DEMO]', a, b: bb, c, d, answer: ans, explanation: ex, marks: 1, status: 'active', createdBy: adminUid };
+    b.set(r, { ...q, createdAt: serverTimestamp() }); bank.push({ id: r.id, ...q });
+  });
   await b.commit();
-  const bank = await list(query(col(`organizations/${o}/questions`), where('subject', '==', 'Physics')));
-  const now = Date.now(); S.uid = S.uid || adminUid;
-  await publishExam(o, { title: 'SS2 Physics — Motion [DEMO]', subject: 'Physics', class: 'SS2', duration: 30, count: 3, passMark: 50, startAt: new Date(now - 36e5), endAt: new Date(now + 365 * 864e5), randomQ: true, randomO: true, corrections: 'after', instructions: 'Demo exam. Answer all questions.' }, bank);
+  const now = Date.now();
+  await publishExam(o, { title: 'SS2 Physics — Motion [DEMO]', subject: 'Physics', class: 'SS2', duration: 30, count: 3, passMark: 50, startAt: new Date(now - 36e5), endAt: new Date(now + 365 * 864e5), randomQ: true, randomO: true, corrections: 'after', instructions: 'Demo exam. Answer all questions.' }, bank.filter(q => q.subject === 'Physics'));
 }
 
 /* ---------- Views ---------- */
