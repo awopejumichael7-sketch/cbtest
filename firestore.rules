@@ -13,6 +13,7 @@ service cloud.firestore {
     // an attempt is final once submitted, or once its server-checked end time has passed
     function fin(o, id) { return att(o, id).status == 'submitted' || request.time > att(o, id).endsAt; }
     function ex(o, e) { return get(/databases/$(db)/documents/organizations/$(o)/exams/$(e)).data; }
+    function attKeys(d) { return d.keys().hasOnly(['organizationId', 'examId', 'studentId', 'status', 'answers', 'flags', 'qids', 'integrity', 'startedAt', 'endsAt', 'createdAt', 'updatedAt', 'submittedAt']); }
     function near(t, target) { return t >= target - duration.value(120, 's') && t <= target + duration.value(120, 's'); }
 
     match /users/{u} {
@@ -46,11 +47,15 @@ service cloud.firestore {
           && ex(o, request.resource.data.examId).status == 'published'
           && request.time >= ex(o, request.resource.data.examId).startAt && request.time <= ex(o, request.resource.data.examId).endAt
           && near(request.resource.data.startedAt, request.time)
-          && near(request.resource.data.endsAt, request.time + duration.value(ex(o, request.resource.data.examId).duration, 'm'));
+          && near(request.resource.data.endsAt, request.time + duration.value(ex(o, request.resource.data.examId).duration, 'm'))
+          && attKeys(request.resource.data)
+          && request.resource.data.qids is list && request.resource.data.qids.size() == ex(o, request.resource.data.examId).count;
         allow update: if stud(o) && resource.data.studentId == request.auth.uid && resource.data.status == 'running'
           && request.time <= resource.data.endsAt + duration.value(45, 's')
           && request.resource.data.studentId == resource.data.studentId && request.resource.data.endsAt == resource.data.endsAt
-          && request.resource.data.startedAt == resource.data.startedAt && request.resource.data.examId == resource.data.examId;
+          && request.resource.data.startedAt == resource.data.startedAt && request.resource.data.examId == resource.data.examId
+          && attKeys(request.resource.data)
+          && resource.data.get('qids', null) == request.resource.data.get('qids', null);
       }
       match /results/{id} {
         allow read: if staff(o) || (stud(o) && resource.data.studentId == request.auth.uid);

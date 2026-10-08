@@ -1,8 +1,8 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, doc, getDoc, getDocs, setDoc, updateDoc, addDoc, deleteDoc, collection, query, where, orderBy, limit, serverTimestamp, writeBatch, Timestamp, getCountFromServer } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
-import { hash, rng, shuffle, pick, mark, DEFAULT_GRADES, parseCSV, validateRows } from "./lib.js";
+import { hash, rng, shuffle, pick, mark, DEFAULT_GRADES, parseCSV, validateRows, poolPlan, selectForStudent, scopePaper, validateUsers, genPassword } from "./lib.js";
 
 const app = initializeApp(firebaseConfig), auth = getAuth(app);
 const db = initializeFirestore(app, { localCache: persistentLocalCache() }); // offline-tolerant autosave
@@ -59,21 +59,24 @@ async function go(view, arg) {
   $('#out').onclick = () => signOut(auth);
   try { await V[view]($('#v'), arg); } catch (e) { fail(e); $('#v').innerHTML = '<p class="err-t">Could not load this page. Try again.</p>'; }
 }
+let secN = 0;
 async function mkUser(email, pw, data) { // secondary app instance: creating a user must not sign out the current admin
-  const a = initializeApp(firebaseConfig, 'sec' + Date.now()), c = getAuth(a);
-  const r = await createUserWithEmailAndPassword(c, email, pw); await signOut(c);
-  await setDoc(ref(`users/${r.user.uid}`), { ...data, email, status: 'active', createdAt: serverTimestamp() }); return r.user.uid;
+  const a = initializeApp(firebaseConfig, 'sec' + Date.now() + '_' + (secN++)), c = getAuth(a);
+  try {
+    const r = await createUserWithEmailAndPassword(c, email, pw); await signOut(c);
+    await setDoc(ref(`users/${r.user.uid}`), { ...data, email, status: 'active', createdAt: serverTimestamp() }); return r.user.uid;
+  } finally { await deleteApp(a).catch(() => { }); }
 }
 async function publishExam(o, e, bank) {
   const pool = bank.filter(q => q.status !== 'inactive');
-  const chosen = pick(pool, +e.count, { easy: +e.easy || 0, medium: +e.medium || 0, hard: +e.hard || 0 });
+  const plan = poolPlan(e), chosen = pick(pool, plan.ps, plan.pd);
   const b = writeBatch(db), id = doc(col(`organizations/${o}/exams`)).id, keyMap = {};
   chosen.forEach(q => {
-    b.set(ref(`organizations/${o}/exams/${id}/paper/${q.id}`), { text: q.text, type: q.type, options: Object.fromEntries(['a', 'b', 'c', 'd'].filter(k => q[k]).map(k => [k.toUpperCase(), q[k]])), image: q.image || '', marks: q.marks || 1 });
+    b.set(ref(`organizations/${o}/exams/${id}/paper/${q.id}`), { text: q.text, type: q.type, options: Object.fromEntries(['a', 'b', 'c', 'd'].filter(k => q[k]).map(k => [k.toUpperCase(), q[k]])), image: q.image || '', marks: q.marks || 1, difficulty: q.difficulty || 'medium' });
     keyMap[q.id] = { a: q.answer, e: q.explanation || '' };
   });
   b.set(ref(`organizations/${o}/exams/${id}/keys/main`), { map: keyMap });
-  b.set(ref(`organizations/${o}/exams/${id}`), { organizationId: o, title: e.title, subject: e.subject, class: e.class || '', instructions: e.instructions || '', duration: +e.duration, count: chosen.length, totalMarks: chosen.reduce((s, q) => s + (+q.marks || 1), 0), passMark: +e.passMark, startAt: Timestamp.fromDate(new Date(e.startAt)), endAt: Timestamp.fromDate(new Date(e.endAt)), randomQ: !!e.randomQ, randomO: !!e.randomO, corrections: e.corrections || 'after', status: 'published', createdBy: S.uid, createdAt: serverTimestamp() });
+  b.set(ref(`organizations/${o}/exams/${id}`), { organizationId: o, title: e.title, subject: e.subject, class: e.class || '', instructions: e.instructions || '', duration: +e.duration, count: plan.n, poolSize: chosen.length, dist: plan.dist, totalMarks: Math.round(chosen.reduce((s, q) => s + (+q.marks || 1), 0) * plan.n / chosen.length), passMark: +e.passMark, startAt: Timestamp.fromDate(new Date(e.startAt)), endAt: Timestamp.fromDate(new Date(e.endAt)), randomQ: !!e.randomQ, randomO: !!e.randomO, corrections: e.corrections || 'after', status: 'published', createdBy: S.uid, createdAt: serverTimestamp() });
   await b.commit(); return id;
 }
 const DEMO_Q = [['Physics', 'What is the SI unit of force?', 'Joule', 'Newton', 'Watt', 'Pascal', 'B', 'Force = mass × acceleration, measured in newtons.', 'easy'], ['Physics', 'Acceleration is the rate of change of…', 'distance', 'speed', 'velocity', 'mass', 'C', 'Acceleration is the rate of change of velocity with time.', 'medium'], ['Physics', 'A body at constant velocity has net force…', 'Zero', 'Increasing', 'Decreasing', 'Equal to weight', 'A', "Newton's first law.", 'medium'], ['Mathematics', 'Solve 2x + 6 = 14', '2', '4', '6', '8', 'B', '2x = 8, so x = 4.', 'easy'], ['Mathematics', 'What is 15% of 200?', '20', '25', '30', '35', 'C', '0.15 × 200 = 30.', 'easy'], ['Chemistry', 'Chemical symbol for sodium?', 'S', 'So', 'Na', 'Sd', 'C', 'From Latin natrium.', 'easy'], ['English', 'Choose the synonym of "rapid"', 'Slow', 'Quick', 'Heavy', 'Quiet', 'B', 'Rapid means quick.', 'easy']];
@@ -88,6 +91,19 @@ async function seedDemo(o, adminUid) { // write-only: the super admin must never
   const now = Date.now();
   await publishExam(o, { title: 'SS2 Physics — Motion [DEMO]', subject: 'Physics', class: 'SS2', duration: 30, count: 3, passMark: 50, startAt: new Date(now - 36e5), endAt: new Date(now + 365 * 864e5), randomQ: true, randomO: true, corrections: 'after', instructions: 'Demo exam. Answer all questions.' }, bank.filter(q => q.subject === 'Physics'));
 }
+
+/* ---------- Maths (KaTeX, loaded only when a question uses \\( ... \\) or $$ ... $$; pinned version + integrity hashes) ---------- */
+const KX = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/'; let mathReady;
+const loadMath = () => mathReady ||= new Promise((ok, no) => {
+  const el = (t, a) => Object.assign(document.createElement(t), a, { crossOrigin: 'anonymous' });
+  const js = (src, integrity) => new Promise((res, rej) => { const x = el('script', { src, integrity, async: false }); x.onload = res; x.onerror = rej; document.head.append(x); });
+  document.head.append(el('link', { rel: 'stylesheet', href: KX + 'katex.min.css', integrity: 'sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+' }));
+  js(KX + 'katex.min.js', 'sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg').then(() => js(KX + 'contrib/auto-render.min.js', 'sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk')).then(ok, no);
+});
+const math = async el => { // if the CDN is unreachable the raw text stays readable
+  if (!el || !/\\\(|\\\[|\$\$/.test(el.textContent)) return;
+  try { await loadMath(); window.renderMathInElement(el, { throwOnError: false, delimiters: [{ left: '$$', right: '$$', display: true }, { left: '\\[', right: '\\]', display: true }, { left: '\\(', right: '\\)', display: false }] }); } catch { mathReady = null; }
+};
 
 /* ---------- Views ---------- */
 const V = {};
@@ -127,23 +143,52 @@ V.people = async (el, role = 'student') => {
   const cls = S.set.classes || [];
   el.innerHTML = `<h2>People</h2><div class="row noprint"><button class="${role === 'student' ? '' : 'alt'}" id="s">Students</button><button class="${role === 'teacher' ? '' : 'alt'}" id="t">Teachers</button></div>
   <div class="card"><h3>Add ${role}</h3><form id="f" class="grid2"><label>Full name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Temporary password<input name="pw" minlength="6" required></label>${role === 'student' ? `<label>Student ID<input name="sid"></label><label>Class<select name="class">${cls.map(c => `<option>${esc(c)}</option>`).join('')}</select></label>` : ''}<div><button>Create ${role}</button></div></form></div>
+  <div class="card"><h3>Import ${role}s from CSV</h3><p class="muted">Columns: Name, Email, Password (optional), Class, Student ID. Leave Password empty to generate one. Up to 200 rows. A file with the new passwords downloads when finished — share it securely.</p><input type="file" id="csv" accept=".csv"><div id="pv"></div></div>
   <div class="card"><input id="q" placeholder="Search by name or email">${'<div id="tb"></div>'}</div>`;
   $('#s').onclick = () => V.people(el, 'student'); $('#t').onclick = () => V.people(el, 'teacher');
   const draw = () => { const k = $('#q').value.toLowerCase(); $('#tb').innerHTML = tbl(['Name', 'Email', role === 'student' ? 'Class / ID' : '', 'Status', ''], us.filter(u => (u.name + u.email).toLowerCase().includes(k)).map(u => [esc(u.name), esc(u.email), role === 'student' ? esc((u.class || '') + ' ' + (u.studentId || '')) : '', `<span class="badge ${u.status === 'active' ? 'ok' : 'err'}">${u.status}</span>`, `<button class="alt" data-a="t" data-i="${u.id}">${u.status === 'active' ? 'Deactivate' : 'Activate'}</button> <button class="alt" data-a="r" data-i="${u.id}" data-e="${esc(u.email)}">Reset password</button>`])); $('#tb').querySelectorAll('[data-a]').forEach(b => b.onclick = async () => { try { if (b.dataset.a === 'r') { await sendPasswordResetEmail(auth, b.dataset.e); return toast('Reset email sent.'); } const u = us.find(x => x.id === b.dataset.i); await updateDoc(ref(`users/${u.id}`), { status: u.status === 'active' ? 'inactive' : 'active' }); V.people(el, role); } catch (e) { fail(e); } }); };
   let t; $('#q').oninput = () => { clearTimeout(t); t = setTimeout(draw, 250); }; draw();
   $('#f').onsubmit = async e => { e.preventDefault(); const v = fd(e.target); try { await mkUser(v.email, v.pw, { name: v.name, role, organizationId: S.u.organizationId, class: v.class || '', studentId: v.sid || '' }); toast('Account created.'); V.people(el, role); } catch (x) { fail(x); } };
+  $('#csv').onchange = async e => {
+    try {
+      const rows = validateUsers(parseCSV(await e.target.files[0].text()), us.map(u => u.email)), good = rows.filter(r => r.ok);
+      $('#pv').innerHTML = `<p><b>${good.length}</b> valid · <b>${rows.length - good.length}</b> with problems</p>${tbl(['Line', 'Name', 'Email', 'Problem'], rows.filter(r => !r.ok).map(r => [r.line, esc(r.u.name), esc(r.u.email), esc(r.errors.join('; '))]))}<button id="go" ${good.length ? '' : 'disabled'}>Create ${good.length} accounts</button> <span id="pg" class="muted"></span>`;
+      $('#go').onclick = async () => {
+        $('#go').disabled = true; const done = [], failed = [];
+        for (const [n, r] of good.entries()) {
+          $('#pg').textContent = `Creating ${n + 1} of ${good.length}…`; const pw = r.u.password || genPassword();
+          try { await mkUser(r.u.email, pw, { name: r.u.name, role, organizationId: S.u.organizationId, class: r.u.class || '', studentId: r.u.studentId || '' }); done.push([r.u.name, r.u.email, pw]); }
+          catch (x) { failed.push([r.u.name, r.u.email, MSG[x.code] || 'Could not create this account']); }
+        }
+        if (done.length) dl(`new-${role}s-credentials.csv`, [['Name', 'Email', 'Password'], ...done]);
+        toast(`${done.length} created, ${failed.length} failed.`, failed.length ? 'err' : 'ok');
+        if (failed.length) $('#pv').innerHTML = '<p>These rows were not created:</p>' + tbl(['Name', 'Email', 'Reason'], failed.map(f => f.map(esc))); else V.people(el, role);
+      };
+    } catch (x) { fail(x.userMessage ? x : uerr('Could not read that CSV file. Check the header row.')); }
+  };
 };
 V.questions = async el => {
   const qs = await list(query(col(`${base()}/questions`), orderBy('createdAt', 'desc'), limit(100)));
   const subj = S.set.subjects || [], cls = S.set.classes || [];
   const opt = a => a.map(x => `<option>${esc(x)}</option>`).join('');
-  el.innerHTML = `<h2>Question bank</h2><div class="card"><h3>Add question</h3><form id="f" class="grid2"><label>Subject<select name="subject">${opt(subj)}</select></label><label>Topic<input name="topic"></label><label>Class<select name="class">${opt(cls)}</select></label><label>Difficulty<select name="difficulty"><option>easy</option><option selected>medium</option><option>hard</option></select></label><label>Marks<input name="marks" type="number" min="1" value="1"></label><label>Image URL (optional)<input name="image" type="url"></label><label style="grid-column:1/-1">Question<textarea name="text" required></textarea></label>${['a', 'b', 'c', 'd'].map(k => `<label>Option ${k.toUpperCase()}<input name="${k}" ${'ab'.includes(k) ? 'required' : ''}></label>`).join('')}<label>Correct answer<select name="answer"><option>A</option><option>B</option><option>C</option><option>D</option></select></label><label>Explanation<input name="explanation"></label><div><button>Save question</button></div></form></div>
+  el.innerHTML = `<h2>Question bank</h2><div class="card"><h3 id="ft">Add question</h3><form id="f" class="grid2"><label>Subject<select name="subject">${opt(subj)}</select></label><label>Topic<input name="topic"></label><label>Class<select name="class">${opt(cls)}</select></label><label>Difficulty<select name="difficulty"><option>easy</option><option selected>medium</option><option>hard</option></select></label><label>Marks<input name="marks" type="number" min="1" value="1"></label><label>Image URL (optional)<input name="image" type="url"></label><label style="grid-column:1/-1">Question<textarea name="text" required></textarea></label>${['a', 'b', 'c', 'd'].map(k => `<label>Option ${k.toUpperCase()}<input name="${k}" ${'ab'.includes(k) ? 'required' : ''}></label>`).join('')}<label>Correct answer<select name="answer"><option>A</option><option>B</option><option>C</option><option>D</option></select></label><label>Explanation<input name="explanation"></label><div class="row"><button id="sb">Save question</button><button type="button" class="alt" id="cn" hidden>Cancel edit</button></div></form></div>
   <div class="card"><h3>Import CSV</h3><p class="muted">Columns: Question, Option A–D, Correct Answer, Explanation, Subject, Topic, Class, Difficulty, Marks.</p><input type="file" id="csv" accept=".csv"><div id="pv"></div></div>
   <div class="card"><div class="row"><input class="grow" id="q" placeholder="Search"><select id="fs" style="width:auto"><option value="">All subjects</option>${opt(subj)}</select><button class="alt" id="ex">Export CSV</button></div><div id="tb"></div></div>`;
-  const draw = () => { const k = $('#q').value.toLowerCase(), s = $('#fs').value; $('#tb').innerHTML = tbl(['Question', 'Subject', 'Topic', 'Diff.', 'Ans', ''], qs.filter(q => (!s || q.subject === s) && (q.text + q.topic).toLowerCase().includes(k)).map(q => [esc(q.text.slice(0, 70)), esc(q.subject), esc(q.topic), q.difficulty, q.answer, `<button class="alt" data-d="${q.id}">Duplicate</button> <button class="alt" data-x="${q.id}">Delete</button>`])); $('#tb').querySelectorAll('[data-d]').forEach(b => b.onclick = async () => { try { const { id, ...q } = qs.find(x => x.id === b.dataset.d); await addDoc(col(`${base()}/questions`), { ...q, text: q.text + ' (copy)', createdAt: serverTimestamp() }); toast('Duplicated.'); V.questions(el); } catch (e) { fail(e); } }); $('#tb').querySelectorAll('[data-x]').forEach(b => b.onclick = async () => { if (!confirm('Delete this question? Existing exams keep their own copy.')) return; try { await deleteDoc(ref(`${base()}/questions/${b.dataset.x}`)); V.questions(el); } catch (e) { fail(e); } }); };
+  const draw = () => { const k = $('#q').value.toLowerCase(), s = $('#fs').value; $('#tb').innerHTML = tbl(['Question', 'Subject', 'Topic', 'Diff.', 'Ans', ''], qs.filter(q => (!s || q.subject === s) && (q.text + q.topic).toLowerCase().includes(k)).map(q => [esc(q.text.slice(0, 70)), esc(q.subject), esc(q.topic), q.difficulty, q.answer, `<button class="alt" data-m="${q.id}">Edit</button> <button class="alt" data-d="${q.id}">Duplicate</button> <button class="alt" data-x="${q.id}">Delete</button>`])); $('#tb').querySelectorAll('[data-m]').forEach(b => b.onclick = () => startEdit(b.dataset.m)); $('#tb').querySelectorAll('[data-d]').forEach(b => b.onclick = async () => { try { const { id, ...q } = qs.find(x => x.id === b.dataset.d); await addDoc(col(`${base()}/questions`), { ...q, text: q.text + ' (copy)', createdAt: serverTimestamp() }); toast('Duplicated.'); V.questions(el); } catch (e) { fail(e); } }); $('#tb').querySelectorAll('[data-x]').forEach(b => b.onclick = async () => { if (!confirm('Delete this question? Existing exams keep their own copy.')) return; try { await deleteDoc(ref(`${base()}/questions/${b.dataset.x}`)); V.questions(el); } catch (e) { fail(e); } }); };
   let t; $('#q').oninput = () => { clearTimeout(t); t = setTimeout(draw, 250); }; $('#fs').onchange = draw; draw();
   $('#ex').onclick = () => dl('questions.csv', [['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Answer', 'Explanation', 'Subject', 'Topic', 'Class', 'Difficulty', 'Marks'], ...qs.map(q => [q.text, q.a, q.b, q.c, q.d, q.answer, q.explanation, q.subject, q.topic, q.class, q.difficulty, q.marks])]);
-  $('#f').onsubmit = async e => { e.preventDefault(); const v = fd(e.target); try { await addDoc(col(`${base()}/questions`), { ...v, marks: +v.marks || 1, type: v.a.toLowerCase() === 'true' && v.b.toLowerCase() === 'false' && !v.c ? 'truefalse' : 'mcq', organizationId: S.u.organizationId, status: 'active', createdBy: S.uid, createdAt: serverTimestamp() }); toast('Question saved.'); V.questions(el); } catch (x) { fail(x); } };
+  let editing = null; const FIELDS = ['subject', 'topic', 'class', 'difficulty', 'marks', 'image', 'text', 'a', 'b', 'c', 'd', 'answer', 'explanation'];
+  const endEdit = () => { editing = null; $('#f').reset(); $('#sb').textContent = 'Save question'; $('#cn').hidden = true; $('#ft').textContent = 'Add question'; };
+  function startEdit(id) { const q = qs.find(x => x.id === id), f = $('#f'); if (!q) return; editing = id; FIELDS.forEach(k => { f.elements[k].value = q[k] ?? ''; }); $('#sb').textContent = 'Update question'; $('#cn').hidden = false; $('#ft').textContent = 'Edit question'; f.scrollIntoView({ behavior: 'smooth' }); }
+  $('#cn').onclick = endEdit;
+  $('#f').onsubmit = async e => {
+    e.preventDefault(); const v = fd(e.target), data = { ...v, marks: +v.marks || 1, type: v.a.toLowerCase() === 'true' && v.b.toLowerCase() === 'false' && !v.c ? 'truefalse' : 'mcq' };
+    try {
+      if (editing) { await updateDoc(ref(`${base()}/questions/${editing}`), { ...data, updatedAt: serverTimestamp() }); toast('Question updated. Exams already published keep the version they were created with.'); }
+      else { await addDoc(col(`${base()}/questions`), { ...data, organizationId: S.u.organizationId, status: 'active', createdBy: S.uid, createdAt: serverTimestamp() }); toast('Question saved.'); }
+      V.questions(el);
+    } catch (x) { fail(x); }
+  };
   $('#csv').onchange = async e => {
     try {
       const rows = validateRows(parseCSV(await e.target.files[0].text()), qs.map(q => q.text)); const good = rows.filter(r => r.ok);
@@ -160,7 +205,7 @@ V.exams = async el => {
     el.querySelectorAll('[data-e]').forEach(b => b.onclick = () => go('run', b.dataset.e)); el.querySelectorAll('[data-r]').forEach(b => b.onclick = () => V.res(el, b.dataset.r)); return;
   }
   const exs = await list(query(col(`${base()}/exams`), orderBy('createdAt', 'desc'), limit(50))), opt = a => a.map(x => `<option>${esc(x)}</option>`).join(''), d = new Date(Date.now() - 6e4), loc = x => new Date(x - x.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
-  el.innerHTML = `<h2>Exams</h2><div class="card"><h3>Create exam</h3><p class="muted">Questions are drawn at random from your bank for the chosen subject (and class, if set). Set Easy/Medium/Hard counts to control the mix, or leave at 0 for fully random.</p><form id="f" class="grid2"><label>Title<input name="title" required></label><label>Subject<select name="subject">${opt(S.set.subjects || [])}</select></label><label>Class<select name="class"><option value="">All classes</option>${opt(S.set.classes || [])}</select></label><label>Duration (minutes)<input name="duration" type="number" min="1" value="60" required></label><label>Number of questions<input name="count" type="number" min="1" value="10" required></label><label>Pass mark %<input name="passMark" type="number" value="${S.set.passMark || 50}"></label><label>Easy<input name="easy" type="number" min="0" value="0"></label><label>Medium<input name="medium" type="number" min="0" value="0"></label><label>Hard<input name="hard" type="number" min="0" value="0"></label><label>Opens<input name="startAt" type="datetime-local" value="${loc(d)}" required></label><label>Closes<input name="endAt" type="datetime-local" value="${loc(new Date(Date.now() + 7 * 864e5))}" required></label><label>Corrections<select name="corrections"><option value="after">After submission</option><option value="closed">After exam closes</option><option value="never">Never</option></select></label><label><input type="checkbox" name="randomQ" checked style="width:auto;min-height:0"> Shuffle questions per student</label><label><input type="checkbox" name="randomO" checked style="width:auto;min-height:0"> Shuffle options per student</label><label style="grid-column:1/-1">Instructions<textarea name="instructions">${esc(S.set.instructions || '')}</textarea></label><div><button>Create & publish</button></div></form></div>
+  el.innerHTML = `<h2>Exams</h2><div class="card"><h3>Create exam</h3><p class="muted">Questions are drawn at random from your bank for the chosen subject (and class, if set). Set Easy/Medium/Hard counts to control the mix, or leave at 0 for fully random. Set a pool size larger than the questions per student to give every student a different random selection from the pool.</p><form id="f" class="grid2"><label>Title<input name="title" required></label><label>Subject<select name="subject">${opt(S.set.subjects || [])}</select></label><label>Class<select name="class"><option value="">All classes</option>${opt(S.set.classes || [])}</select></label><label>Duration (minutes)<input name="duration" type="number" min="1" value="60" required></label><label>Questions per student<input name="count" type="number" min="1" value="10" required></label><label>Question pool size (optional)<input name="pool" type="number" min="0" placeholder="Same as questions"></label><label>Pass mark %<input name="passMark" type="number" value="${S.set.passMark || 50}"></label><label>Easy<input name="easy" type="number" min="0" value="0"></label><label>Medium<input name="medium" type="number" min="0" value="0"></label><label>Hard<input name="hard" type="number" min="0" value="0"></label><label>Opens<input name="startAt" type="datetime-local" value="${loc(d)}" required></label><label>Closes<input name="endAt" type="datetime-local" value="${loc(new Date(Date.now() + 7 * 864e5))}" required></label><label>Corrections<select name="corrections"><option value="after">After submission</option><option value="closed">After exam closes</option><option value="never">Never</option></select></label><label><input type="checkbox" name="randomQ" checked style="width:auto;min-height:0"> Shuffle questions per student</label><label><input type="checkbox" name="randomO" checked style="width:auto;min-height:0"> Shuffle options per student</label><label style="grid-column:1/-1">Instructions<textarea name="instructions">${esc(S.set.instructions || '')}</textarea></label><div><button>Create & publish</button></div></form></div>
   <div class="card"><h3>All exams</h3>${tbl(['Title', 'Subject', 'Qs', 'Min', 'Closes', 'Status', ''], exs.map(e => [esc(e.title), esc(e.subject), e.count, e.duration, dt(e.endAt), e.status, `<button class="alt" data-c="${e.id}" data-s="${e.status}">${e.status === 'published' ? 'Unpublish' : 'Publish'}</button>`]))}</div>`;
   el.querySelectorAll('[data-c]').forEach(b => b.onclick = async () => { try { await updateDoc(ref(`${base()}/exams/${b.dataset.c}`), { status: b.dataset.s === 'published' ? 'draft' : 'published' }); V.exams(el); } catch (e) { fail(e); } });
   $('#f').onsubmit = async e => { e.preventDefault(); const v = fd(e.target); v.randomQ = e.target.randomQ.checked; v.randomO = e.target.randomO.checked; const btn = $('button', e.target); btn.disabled = true; try { if (new Date(v.endAt) <= new Date(v.startAt)) throw uerr('Closing time must be after opening time.'); let bank = await list(query(col(`${base()}/questions`), where('subject', '==', v.subject), limit(500))); if (v.class) bank = bank.filter(q => !q.class || q.class === v.class); await publishExam(S.u.organizationId, v, bank); toast('Exam published.'); V.exams(el); } catch (x) { fail(x); btn.disabled = false; } };
@@ -187,11 +232,12 @@ V.res = async (el, id) => {
   const canCorr = S.u.role !== 'student' || ex.corrections === 'after' || (ex.corrections === 'closed' && ex.endAt.toMillis() < Date.now());
   el.innerHTML = `<div class="card"><div class="row">${s.logo ? `<img class="logo" src="${esc(s.logo)}" alt="">` : ''}<div><h2>${esc(s.name)}</h2><p class="muted">${esc(s.motto)} ${esc(s.address)}</p></div></div><h3>Examination result</h3>${tbl(['Student', 'ID', 'Class', 'Exam', 'Subject', 'Date'], [[esc(r.studentName), esc(r.studentCode), esc(r.class), esc(r.title), esc(r.subject), dt(r.submittedAt)]])}<div class="grid">${stat('Score', r.score + '/' + r.total)}${stat('Percentage', r.pct + '%')}${stat('Grade', r.grade)}${stat('Status', r.pass ? 'PASS' : 'FAIL')}</div><p>Correct: ${r.correct} · Wrong: ${r.wrong} · Unanswered: ${r.unanswered}</p><p class="muted">Examiner signature: ____________________</p><div class="row noprint"><button id="pr">Print</button>${canCorr ? '<button class="alt" id="co">View corrections</button>' : ''}<button class="alt" id="bk">Back</button></div><div id="cx"></div></div>`;
   $('#pr').onclick = () => window.print(); $('#bk').onclick = () => go(S.u.role === 'student' ? 'history' : 'results');
+  if (S.u.role !== 'student') getDoc(ref(`${base()}/attempts/${id}`)).then(a => { const g = a.data()?.integrity; if (g) $('#cx').insertAdjacentHTML('beforebegin', `<p class="muted noprint">Exam activity signals: ${+g.tabSwitches || 0} tab/app switches · ${+g.copyPaste || 0} copy/paste attempts</p>`); }).catch(() => { });
   if (canCorr) $('#co').onclick = async () => {
     try {
-      const [paper, key, at] = await Promise.all([list(col(`${base()}/exams/${r.examId}/paper`)), getDoc(ref(`${base()}/exams/${r.examId}/keys/main`)), getDoc(ref(`${base()}/attempts/${id}`))]);
-      const k = key.data().map, ans = at.data().answers || {};
-      $('#cx').innerHTML = paper.map((q, i) => `<div class="card"><b>${i + 1}. ${esc(q.text)}</b><p class="${ans[q.id] === k[q.id]?.a ? 'ok-t' : 'err-t'}">Your answer: ${ans[q.id] ? ans[q.id] + '. ' + esc(q.options[ans[q.id]]) : 'Not answered'}</p><p>Correct answer: ${k[q.id].a}. ${esc(q.options[k[q.id].a])}</p><p class="muted">${esc(k[q.id].e)}</p></div>`).join('');
+      const [paperAll, key, at] = await Promise.all([list(col(`${base()}/exams/${r.examId}/paper`)), getDoc(ref(`${base()}/exams/${r.examId}/keys/main`)), getDoc(ref(`${base()}/attempts/${id}`))]);
+      const k = key.data().map, ad = at.data(), ans = ad.answers || {}, paper = scopePaper(paperAll, ad.qids);
+      $('#cx').innerHTML = paper.map((q, i) => `<div class="card"><b>${i + 1}. ${esc(q.text)}</b><p class="${ans[q.id] === k[q.id]?.a ? 'ok-t' : 'err-t'}">Your answer: ${ans[q.id] ? ans[q.id] + '. ' + esc(q.options[ans[q.id]]) : 'Not answered'}</p><p>Correct answer: ${k[q.id].a}. ${esc(q.options[k[q.id].a])}</p><p class="muted">${esc(k[q.id].e)}</p></div>`).join(''); math($('#cx'));
     } catch (e) { fail(e); }
   };
 };
@@ -217,30 +263,31 @@ V.run = async id => {
     if (!ex || ex.status !== 'published') throw uerr('This exam is not available.');
     let a = await getDoc(aref);
     if ((await getDoc(ref(`${base()}/results/${aid}`))).exists()) return V.res(null, aid);
+    const paperAll = await list(col(`${base()}/exams/${id}/paper`));
     if (!a.exists()) {
       if (!await new Promise(ok => { A.innerHTML = `<div class="login card"><h2>${esc(ex.title)}</h2><p>${ex.count} questions · ${ex.duration} minutes. The timer starts when you click Begin.</p><p style="white-space:pre-wrap">${esc(ex.instructions)}</p><button id="b">Begin exam</button> <button class="alt" id="c">Cancel</button></div>`; $('#b').onclick = () => ok(true); $('#c').onclick = () => ok(false); })) return go('exams');
-      const now = Date.now(); await setDoc(aref, { organizationId: S.u.organizationId, examId: id, studentId: S.uid, status: 'running', answers: {}, flags: {}, startedAt: Timestamp.fromMillis(now), endsAt: Timestamp.fromMillis(now + ex.duration * 6e4), createdAt: serverTimestamp() }).catch(e => { throw e.code === 'permission-denied' ? uerr('Could not start. The exam may be closed, or your device clock is wrong.') : e; });
+      const now = Date.now(); await setDoc(aref, { organizationId: S.u.organizationId, examId: id, studentId: S.uid, status: 'running', answers: {}, flags: {}, qids: selectForStudent(paperAll, ex.count, ex.dist, hash(aid)), integrity: { tabSwitches: 0, copyPaste: 0 }, startedAt: Timestamp.fromMillis(now), endsAt: Timestamp.fromMillis(now + ex.duration * 6e4), createdAt: serverTimestamp() }).catch(e => { throw e.code === 'permission-denied' ? uerr('Could not start. The exam may be closed, or your device clock is wrong.') : e; });
       a = await getDoc(aref);
     }
     const at = a.data(), endsAt = at.endsAt.toMillis(), lk = 'ans_' + aid;
     let ans = { ...(at.answers || {}) }, flags = { ...(at.flags || {}) }; try { const l = JSON.parse(localStorage.getItem(lk) || '{}'); ans = { ...ans, ...l.ans }; flags = { ...flags, ...l.flags }; } catch { }
     const finalize = async () => {
-      const [paper, key] = await Promise.all([list(col(`${base()}/exams/${id}/paper`)), getDoc(ref(`${base()}/exams/${id}/keys/main`))]);
+      const paper = scopePaper(paperAll, at.qids), key = await getDoc(ref(`${base()}/exams/${id}/keys/main`));
       const m = mark(paper, key.data().map, ans, ex.passMark, grades());
       await setDoc(ref(`${base()}/results/${aid}`), { organizationId: S.u.organizationId, examId: id, studentId: S.uid, studentName: S.u.name, studentCode: S.u.studentId || '', class: S.u.class || '', title: ex.title, subject: ex.subject, ...m, submittedAt: serverTimestamp() });
       localStorage.removeItem(lk); await go('exams'); V.res($('#v'), aid);
     };
     if (at.status === 'submitted' || Date.now() > endsAt + 45e3) { toast('This exam has ended. Marking your saved answers…'); return finalize().catch(fail); }
-    const paper = await list(col(`${base()}/exams/${id}/paper`)); let qs = paper;
+    let qs = scopePaper(paperAll, at.qids);
     if (ex.randomQ) qs = shuffle(qs, rng(hash(aid))); else qs = [...qs].sort((x, y) => x.id < y.id ? -1 : 1);
     qs = qs.map(q => ({ ...q, opts: ex.randomO ? shuffle(Object.keys(q.options), rng(hash(aid + q.id))) : Object.keys(q.options).sort() }));
-    let i = 0, dirty = false, saving = false, st;
-    const save = async () => { localStorage.setItem(lk, JSON.stringify({ ans, flags })); if (!dirty || saving) return; saving = true; try { await Promise.race([updateDoc(aref, { answers: ans, flags, updatedAt: serverTimestamp() }), new Promise((_, no) => setTimeout(() => no(new Error('slow')), 8000))]); dirty = false; $('#sv') && ($('#sv').textContent = 'Saved'); } catch { $('#sv') && ($('#sv').textContent = 'Offline — saved on this device, will sync'); } saving = false; };
+    let i = 0, dirty = false, saving = false, st; const integ = { tabSwitches: 0, copyPaste: 0, ...(at.integrity || {}) }; // signals for teachers, not proof of cheating
+    const save = async () => { localStorage.setItem(lk, JSON.stringify({ ans, flags })); if (!dirty || saving) return; saving = true; try { await Promise.race([updateDoc(aref, { answers: ans, flags, integrity: integ, updatedAt: serverTimestamp() }), new Promise((_, no) => setTimeout(() => no(new Error('slow')), 8000))]); dirty = false; $('#sv') && ($('#sv').textContent = 'Saved'); } catch { $('#sv') && ($('#sv').textContent = 'Offline — saved on this device, will sync'); } saving = false; };
     const touch = () => { dirty = true; clearTimeout(st); st = setTimeout(save, 4000); localStorage.setItem(lk, JSON.stringify({ ans, flags })); $('#sv') && ($('#sv').textContent = 'Saving…'); };
-    let ending = false;
+    let ending = false, sent = false, cleanup = () => { };
     const submit = async auto => {
       if (ending) return; if (!auto && !confirm(`Submit now? You answered ${Object.keys(ans).length} of ${qs.length} questions.`)) return; ending = true; timers.forEach(clearInterval); clearTimeout(st); A.innerHTML = '<p class="center muted">Submitting…</p>';
-      try { await updateDoc(aref, { answers: ans, flags, status: 'submitted', submittedAt: serverTimestamp() }).catch(e => { if (Date.now() <= endsAt + 45e3) throw e; }); await finalize(); } catch (e) { ending = false; fail(e.code === 'unavailable' ? Object.assign(e, { code: 'unavailable' }) : e); draw(); }
+      try { if (!sent) { await updateDoc(aref, { answers: ans, flags, integrity: integ, status: 'submitted', submittedAt: serverTimestamp() }).catch(e => { if (Date.now() <= endsAt + 45e3) throw e; }); sent = true; } cleanup(); await finalize(); } catch (e) { ending = false; fail(e.code === 'unavailable' ? Object.assign(e, { code: 'unavailable' }) : e); draw(); }
     };
     const draw = () => {
       const q = qs[i]; if (!q) return;
@@ -250,11 +297,15 @@ V.run = async id => {
       A.querySelectorAll('.opt').forEach(b => b.onclick = () => { ans[q.id] = b.dataset.k; touch(); draw(); });
       A.querySelectorAll('[data-n]').forEach(b => b.onclick = () => { i = +b.dataset.n; draw(); });
       $('#pv').onclick = () => { i--; draw(); }; $('#nx').onclick = () => { i++; draw(); };
-      $('#fl').onclick = () => { flags[q.id] ? delete flags[q.id] : flags[q.id] = 1; touch(); draw(); }; $('#cl').onclick = () => { delete ans[q.id]; touch(); draw(); }; $('#sb').onclick = () => submit(false); tick();
+      $('#fl').onclick = () => { flags[q.id] ? delete flags[q.id] : flags[q.id] = 1; touch(); draw(); }; $('#cl').onclick = () => { delete ans[q.id]; touch(); draw(); }; $('#sb').onclick = () => submit(false); tick(); math(A);
     };
     const tick = () => { const left = Math.max(0, endsAt - Date.now()), s = Math.ceil(left / 1000), t = $('#tm'); if (t) { t.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; t.classList.toggle('low', s < 300); } if (left <= 0) submit(true); };
     timers.push(setInterval(tick, 1000)); timers.push(setInterval(save, 30000));
-    addEventListener('online', save); document.addEventListener('visibilitychange', () => document.hidden && save()); addEventListener('beforeunload', () => localStorage.setItem(lk, JSON.stringify({ ans, flags })));
+    const offs = []; cleanup = () => offs.forEach(f => f());
+    const on = (t, ev, fn) => { t.addEventListener(ev, fn); offs.push(() => t.removeEventListener(ev, fn)); };
+    on(window, 'online', save); on(window, 'beforeunload', () => localStorage.setItem(lk, JSON.stringify({ ans, flags })));
+    on(document, 'visibilitychange', () => { if (document.hidden) { integ.tabSwitches++; touch(); save(); } });
+    ['copy', 'cut', 'paste'].forEach(ev => on(document, ev, () => { integ.copyPaste++; touch(); }));
     draw();
   } catch (e) { fail(e); go('exams'); }
 };

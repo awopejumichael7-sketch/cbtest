@@ -20,8 +20,9 @@ Rules enforce isolation on the server: every read/write checks `users/{uid}.orga
 ## Known limitations (be aware)
 - **Scoring runs in the browser** (no Cloud Functions on Spark). A technically skilled student could write a false result for their *own single attempt*. For tamper-proof marking, move `mark()` in `lib.js` into a Cloud Function (requires the Blaze plan) and remove student `create` on `results`.
 - Corrections visibility ("never"/"after close") is enforced in the UI; the rules unlock answer keys once an attempt is final because marking needs them.
-- One attempt per student per exam; retakes and per-student random subsets of a larger pool are not built (every student gets the same questions, in shuffled order/options). Exams are generated once from the bank at creation.
-- Not built (architecture ready): subscriptions, payments, custom domains (add `domain` to `settings/general` and resolve org by hostname), SMS/email, certificates, PDF export, bulk student import, proctoring. Edit-question and per-student drill-down screens are not included; list views load 100 rows max.
+- One attempt per student per exam. **Retakes are deliberately not built:** with browser-side marking a student can read the answer key after attempt 1, so a retake would be compromised. Add server-side marking first. Per-student random subsets (question pools) are built; the selection is made in the browser and the rules enforce only the *number* of questions, not which ones.
+- Exam activity signals are written by the student's browser, so they can be suppressed by a determined user; treat them as hints.
+- Not built (architecture ready): subscriptions, payments, custom domains (add `domain` to `settings/general` and resolve org by hostname), SMS/email, certificates, PDF export, proctoring, server-side marking, multiple languages. A per-student drill-down screen is not included; list views load 100 rows max. Bulk import creates accounts one by one (Firebase throttles very fast sign-ups), so allow a minute per 100.
 
 ## Testing
 `node test.mjs` runs unit tests for the logic (seeded shuffle, random/distribution pick, marking, grading, CSV parsing/validation). Firestore rules should be checked with the Firebase Emulator Rules Playground.

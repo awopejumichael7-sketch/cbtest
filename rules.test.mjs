@@ -25,16 +25,18 @@ before(async () => {
     await w('users/adminB', { ...base('B'), role: 'admin', name: 'Admin B' });
     await w('users/studentS', { ...base('S'), role: 'student', name: 'Student S' });
     await w(`${O('A')}/questions/q1`, { text: 'Q', answer: 'B' });
-    await w(`${O('A')}/exams/e1`, { title: 'E', status: 'published', duration: 30, startAt: min(-60), endAt: min(1440) });
+    await w(`${O('A')}/exams/e1`, { title: 'E', status: 'published', duration: 30, count: 1, startAt: min(-60), endAt: min(1440) });
     await w(`${O('A')}/exams/e1/paper/q1`, { text: 'Q', options: { A: 'x', B: 'y' } });
     await w(`${O('A')}/exams/e1/keys/main`, { map: { q1: { a: 'B' } } });
     await w(`${O('A')}/exams/draft`, { title: 'D', status: 'draft', duration: 30, startAt: min(-60), endAt: min(1440) });
     await w(`${O('A')}/results/studentA2_e1`, { studentId: 'studentA2', pct: 90 });
+    // an in-progress attempt created before pools existed (no qids field)
+    await w(`${O('A')}/attempts/studentA2_e1`, { organizationId: 'A', examId: 'e1', studentId: 'studentA2', status: 'running', answers: {}, flags: {}, startedAt: min(-1), endsAt: min(29) });
   });
 });
 after(() => env.cleanup());
 
-const attempt = (uid, over = {}) => ({ organizationId: 'A', examId: 'e1', studentId: uid, status: 'running', answers: {}, flags: {}, startedAt: TS.now(), endsAt: min(30), createdAt: firebase.firestore.FieldValue.serverTimestamp(), ...over });
+const attempt = (uid, over = {}) => ({ organizationId: 'A', examId: 'e1', studentId: uid, status: 'running', answers: {}, flags: {}, qids: ['q1'], integrity: { tabSwitches: 0, copyPaste: 0 }, startedAt: TS.now(), endsAt: min(30), createdAt: firebase.firestore.FieldValue.serverTimestamp(), ...over });
 
 test('unauthenticated users cannot read anything', async () => {
   const d = env.unauthenticatedContext().firestore();
@@ -76,7 +78,19 @@ test('attempt: valid start succeeds; spoofed identity, wrong id and extended tim
   await assertFails(d.doc(`${O('A')}/attempts/wrong-id`).set(attempt('studentA')));
   await assertFails(d.doc(p).set(attempt('studentA', { endsAt: min(300) })));
   await assertFails(d.doc(p).set(attempt('studentA', { startedAt: min(-600), endsAt: min(-570) })));
+  const noQids = attempt('studentA'); delete noQids.qids;
+  await assertFails(d.doc(p).set(noQids));                                      // must record which questions were assigned
+  await assertFails(d.doc(p).set(attempt('studentA', { qids: ['q1', 'q2'] }))); // wrong number of questions for this exam
+  await assertFails(d.doc(p).set(attempt('studentA', { qids: [] })));
+  await assertFails(d.doc(p).set(attempt('studentA', { cheat: true })));        // unknown fields are rejected
   await assertSucceeds(d.doc(p).set(attempt('studentA')));
+});
+test('attempt: assigned questions are locked; integrity signals and legacy attempts still save', async () => {
+  const p = `${O('A')}/attempts/studentA_e1`;
+  await assertFails(ctx('studentA').doc(p).update({ qids: ['q1', 'q9'] })); await assertFails(ctx('studentA').doc(p).update({ extra: 1 }));
+  await assertSucceeds(ctx('studentA').doc(p).update({ integrity: { tabSwitches: 2, copyPaste: 1 } }));
+  await assertSucceeds(ctx('studentA2').doc(`${O('A')}/attempts/studentA2_e1`).update({ answers: { q1: 'B' } })); // legacy: no qids
+  await assertFails(ctx('studentA2').doc(`${O('A')}/attempts/studentA2_e1`).update({ qids: ['q1'] }));
 });
 test('attempt: answers save, but endsAt cannot be extended and keys stay locked while running', async () => {
   const d = ctx('studentA'), p = `${O('A')}/attempts/studentA_e1`;
