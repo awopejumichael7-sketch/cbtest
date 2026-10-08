@@ -1,0 +1,16 @@
+# GitHub requires this file at .github/workflows/ci.yml (GitHub's own rule; the only file that must live in a folder).
+name: CI
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - run: npm install
+      - run: npm run lint
+      - run: npm test
+      - run: npm run test:rules

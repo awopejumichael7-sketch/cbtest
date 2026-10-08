@@ -25,3 +25,9 @@ Rules enforce isolation on the server: every read/write checks `users/{uid}.orga
 
 ## Testing
 `node test.mjs` runs unit tests for the logic (seeded shuffle, random/distribution pick, marking, grading, CSV parsing/validation). Firestore rules should be checked with the Firebase Emulator Rules Playground.
+
+## v1.1 add-ons (all optional, no original file changed)
+- **Install as an app (PWA):** add `<script type="module" src="pwa.js"></script>` to `index.html`, upload `sw.js`, `manifest.webmanifest`, `icon-*.png`. Bump `VERSION` in `sw.js` on each release.
+- **Rules tests:** `npm install`, then `npm run test:rules` (needs Java). **Lint/unit tests:** `npm run lint`, `npm test`.
+- **CI:** place `ci.yml` at `.github/workflows/ci.yml` (GitHub requires that path).
+- **Legal pages:** edit the `[brackets]` in `privacy.html` / `terms.html` and link them from the settings footer text.

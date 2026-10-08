@@ -1,0 +1,5 @@
+{ "name": "cbt-platform", "version": "1.0.0", "private": true, "type": "module",
+  "scripts": { "test": "node test.mjs", "lint": "eslint .",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-cbt \"node --test rules.test.mjs\"",
+    "test:all": "npm run lint && npm test && npm run test:rules" },
+  "devDependencies": { "@firebase/rules-unit-testing": "^3.0.4", "eslint": "^9.0.0", "firebase": "^10.12.2", "firebase-tools": "^13.0.0" } }
