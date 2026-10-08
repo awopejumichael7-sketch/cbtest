@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signed() { return request.auth != null; }
+    function me() { return get(/databases/$(db)/documents/users/$(request.auth.uid)).data; }
+    function isSA() { return signed() && me().role == 'superadmin' && me().status == 'active'; }
+    function orgOk(o) { return get(/databases/$(db)/documents/organizations/$(o)).data.status == 'active'; }
+    function inOrg(o) { return signed() && me().organizationId == o && me().status == 'active' && orgOk(o); }
+    function adm(o) { return inOrg(o) && me().role == 'admin'; }
+    function staff(o) { return inOrg(o) && me().role in ['admin', 'teacher']; }
+    function stud(o) { return inOrg(o) && me().role == 'student'; }
+    function att(o, id) { return get(/databases/$(db)/documents/organizations/$(o)/attempts/$(id)).data; }
+    // an attempt is final once submitted, or once its server-checked end time has passed
+    function fin(o, id) { return att(o, id).status == 'submitted' || request.time > att(o, id).endsAt; }
+    function ex(o, e) { return get(/databases/$(db)/documents/organizations/$(o)/exams/$(e)).data; }
+    function near(t, target) { return t >= target - duration.value(120, 's') && t <= target + duration.value(120, 's'); }
+
+    match /users/{u} {
+      allow get: if signed() && (request.auth.uid == u || isSA() ||
+        (me().role in ['admin', 'teacher'] && me().organizationId == resource.data.organizationId));
+      allow list: if signed() && (isSA() || (me().role in ['admin', 'teacher'] && resource.data.organizationId == me().organizationId));
+      // Super admin creates org admins; org admins create teachers/students in their OWN org only.
+      allow create: if isSA() && request.resource.data.role == 'admin'
+        || signed() && me().role == 'admin' && me().status == 'active' && request.resource.data.organizationId == me().organizationId
+           && request.resource.data.role in ['teacher', 'student'];
+      allow update: if (isSA() || (signed() && me().role == 'admin' && me().organizationId == resource.data.organizationId))
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.organizationId == resource.data.organizationId;
+    }
+    match /organizations/{o} {
+      allow read: if isSA() || (signed() && me().organizationId == o);
+      allow write: if isSA();
+      match /settings/{s} { allow read: if inOrg(o); allow write: if adm(o) || isSA(); }
+      match /questions/{q} { allow read: if staff(o); allow write: if staff(o) || isSA(); }
+      match /exams/{e} {
+        allow read: if staff(o) || (stud(o) && resource.data.status == 'published');
+        allow write: if staff(o) || isSA(); // super admin write is used only to seed demo data
+        match /paper/{q} { allow read: if staff(o) || (stud(o) && ex(o, e).status == 'published'); allow write: if staff(o) || isSA(); }
+        match /keys/{k} { allow read: if staff(o) || (stud(o) && fin(o, request.auth.uid + '_' + e)); allow write: if staff(o) || isSA(); }
+      }
+      match /attempts/{id} {
+        allow read: if staff(o) || (stud(o) && resource.data.studentId == request.auth.uid);
+        allow create: if stud(o) && id == request.auth.uid + '_' + request.resource.data.examId
+          && request.resource.data.studentId == request.auth.uid && request.resource.data.organizationId == o
+          && request.resource.data.status == 'running'
+          && ex(o, request.resource.data.examId).status == 'published'
+          && request.time >= ex(o, request.resource.data.examId).startAt && request.time <= ex(o, request.resource.data.examId).endAt
+          && near(request.resource.data.startedAt, request.time)
+          && near(request.resource.data.endsAt, request.time + duration.value(ex(o, request.resource.data.examId).duration, 'm'));
+        allow update: if stud(o) && resource.data.studentId == request.auth.uid && resource.data.status == 'running'
+          && request.time <= resource.data.endsAt + duration.value(45, 's')
+          && request.resource.data.studentId == resource.data.studentId && request.resource.data.endsAt == resource.data.endsAt
+          && request.resource.data.startedAt == resource.data.startedAt && request.resource.data.examId == resource.data.examId;
+      }
+      match /results/{id} {
+        allow read: if staff(o) || (stud(o) && resource.data.studentId == request.auth.uid);
+        // Spark-plan limitation: score is computed in the browser (see README). One write only; no updates.
+        allow create: if stud(o) && id == request.auth.uid + '_' + request.resource.data.examId
+          && request.resource.data.studentId == request.auth.uid && request.resource.data.organizationId == o && fin(o, id);
+        allow delete: if adm(o);
+      }
+    }
+  }
+}
