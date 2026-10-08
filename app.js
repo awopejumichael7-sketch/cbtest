@@ -21,7 +21,9 @@ const list = async q => (await getDocs(q)).docs.map(d => ({ id: d.id, ...d.data(
 const dl = (name, rows) => { const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n'); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = name; a.click(); };
 const tbl = (h, rows) => rows.length ? `<div class="tw"><table><thead><tr>${h.map(x => `<th>${x}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="muted">Nothing here yet.</p>';
 const stat = (l, v) => `<div class="card stat"><b>${esc(v)}</b>${l}</div>`;
-const grades = () => S.set?.grades || DEFAULT_GRADES;
+const GSTR = '70:A, 60:B, 50:C, 40:D, 0:F'; // stored as a string: Firestore forbids nested arrays
+const parseGrades = t => t.split(',').map(x => x.split(':')).map(([m, l]) => [+m, (l || '').trim()]);
+const grades = () => typeof S.set?.grades === 'string' ? parseGrades(S.set.grades) : DEFAULT_GRADES;
 
 /* ---------- Auth & boot ---------- */
 function loginView(msg = '') {
@@ -97,8 +99,8 @@ V.orgs = async el => {
     try {
       let logo = ''; const f = e.target.logo.files[0]; if (f) logo = await fileData(f);
       const id = v.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) + '-' + Math.random().toString(36).slice(2, 6);
-      await setDoc(ref(`organizations/${id}`), { name: v.name, adminEmail: v.email, phone: v.phone, status: 'active', createdAt: serverTimestamp() });
-      await setDoc(ref(`organizations/${id}/settings/general`), { name: v.name, logo, motto: '', footer: '', phone: v.phone, email: v.email, address: '', primaryColor: v.p, secondaryColor: v.s, instructions: 'Read each question carefully. Your answers save automatically. The exam submits when time ends.', grades: DEFAULT_GRADES, passMark: 50, classes: ['JSS1', 'JSS2', 'JSS3', 'SS1', 'SS2', 'SS3'], subjects: ['Mathematics', 'Physics', 'Chemistry', 'English'], domain: '' });
+      const ob = writeBatch(db); ob.set(ref(`organizations/${id}`), { name: v.name, adminEmail: v.email, phone: v.phone, status: 'active', createdAt: serverTimestamp() });
+      ob.set(ref(`organizations/${id}/settings/general`), { name: v.name, logo, motto: '', footer: '', phone: v.phone, email: v.email, address: '', primaryColor: v.p, secondaryColor: v.s, instructions: 'Read each question carefully. Your answers save automatically. The exam submits when time ends.', grades: GSTR, passMark: 50, classes: ['JSS1', 'JSS2', 'JSS3', 'SS1', 'SS2', 'SS3'], subjects: ['Mathematics', 'Physics', 'Chemistry', 'English'], domain: '' }); await ob.commit();
       const uid = await mkUser(v.email, v.pw, { name: v.adminName, role: 'admin', organizationId: id });
       if (v.demo) { await seedDemo(id, uid); }
       toast('Organization created. Share the admin login with the customer.'); go('orgs');
@@ -192,13 +194,13 @@ V.res = async (el, id) => {
 };
 V.settings = async el => {
   const s = S.set;
-  el.innerHTML = `<h2>Organization settings</h2><div class="card"><form id="f" class="grid2"><label>Name<input name="name" value="${esc(s.name)}" required></label><label>Motto<input name="motto" value="${esc(s.motto)}"></label><label>Primary color<input type="color" name="primaryColor" value="${s.primaryColor || '#1d4ed8'}"></label><label>Secondary color<input type="color" name="secondaryColor" value="${s.secondaryColor || '#dc2626'}"></label><label>Phone<input name="phone" value="${esc(s.phone)}"></label><label>Email<input name="email" value="${esc(s.email)}"></label><label>Address<input name="address" value="${esc(s.address)}"></label><label>Footer text<input name="footer" value="${esc(s.footer)}"></label><label>Logo (under 150 KB)<input type="file" name="logo" accept="image/*"></label><label>Default pass mark %<input type="number" name="passMark" value="${s.passMark || 50}"></label><label>Grading (min%:grade)<input name="grades" value="${(s.grades || DEFAULT_GRADES).map(g => g.join(':')).join(', ')}"></label><label>Classes (comma-separated)<input name="classes" value="${esc((s.classes || []).join(', '))}"></label><label>Subjects (comma-separated)<input name="subjects" value="${esc((s.subjects || []).join(', '))}"></label><label style="grid-column:1/-1">Default exam instructions<textarea name="instructions">${esc(s.instructions)}</textarea></label><div><button>Save settings</button></div></form></div>`;
+  el.innerHTML = `<h2>Organization settings</h2><div class="card"><form id="f" class="grid2"><label>Name<input name="name" value="${esc(s.name)}" required></label><label>Motto<input name="motto" value="${esc(s.motto)}"></label><label>Primary color<input type="color" name="primaryColor" value="${s.primaryColor || '#1d4ed8'}"></label><label>Secondary color<input type="color" name="secondaryColor" value="${s.secondaryColor || '#dc2626'}"></label><label>Phone<input name="phone" value="${esc(s.phone)}"></label><label>Email<input name="email" value="${esc(s.email)}"></label><label>Address<input name="address" value="${esc(s.address)}"></label><label>Footer text<input name="footer" value="${esc(s.footer)}"></label><label>Logo (under 150 KB)<input type="file" name="logo" accept="image/*"></label><label>Default pass mark %<input type="number" name="passMark" value="${s.passMark || 50}"></label><label>Grading (min%:grade)<input name="grades" value="${esc(typeof s.grades === 'string' ? s.grades : GSTR)}"></label><label>Classes (comma-separated)<input name="classes" value="${esc((s.classes || []).join(', '))}"></label><label>Subjects (comma-separated)<input name="subjects" value="${esc((s.subjects || []).join(', '))}"></label><label style="grid-column:1/-1">Default exam instructions<textarea name="instructions">${esc(s.instructions)}</textarea></label><div><button>Save settings</button></div></form></div>`;
   $('#f').onsubmit = async e => {
     e.preventDefault(); const v = fd(e.target), L = x => x.split(',').map(y => y.trim()).filter(Boolean);
     try {
-      const g = L(v.grades).map(x => x.split(':')).map(([m, l]) => [+m, (l || '').trim()]); if (!g.length || g.some(x => isNaN(x[0]) || !x[1])) throw uerr('Grading must look like 70:A, 60:B, 0:F');
+      const g = parseGrades(v.grades); if (!g.length || g.some(x => isNaN(x[0]) || !x[1])) throw uerr('Grading must look like 70:A, 60:B, 0:F');
       const f = e.target.logo.files[0], logo = f ? await fileData(f) : s.logo || '';
-      const n = { ...s, ...v, logo, passMark: +v.passMark, grades: g, classes: L(v.classes), subjects: L(v.subjects) }; await setDoc(ref(`${base()}/settings/general`), n); S.set = n;
+      const n = { ...s, ...v, logo, passMark: +v.passMark, grades: v.grades.trim(), classes: L(v.classes), subjects: L(v.subjects) }; await setDoc(ref(`${base()}/settings/general`), n); S.set = n;
       const r = document.documentElement.style; r.setProperty('--p', n.primaryColor); r.setProperty('--s', n.secondaryColor); toast('Settings saved.'); go('settings');
     } catch (x) { fail(x); }
   };
