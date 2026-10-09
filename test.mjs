@@ -89,4 +89,8 @@ assert.deepEqual(tv.map(r => r.ok), [true, true, false, false]); assert.equal(tv
 assert.ok(tv[3].errors.includes('Missing subject')); assert.equal(tv[1].q.type, 'mcq');
 // teacher subjects column in bulk import
 assert.equal(validateUsers(parseCSV('Name,Email,Subjects\nTeni,t@x.com,Physics|Maths'))[0].u.subjects, 'Physics|Maths');
+// firestore.rules: brackets must balance AFTER comments are removed (a trailing // comment can hide a closing brace)
+import { readFileSync } from 'node:fs';
+const rulesSrc = readFileSync(new URL('./firestore.rules', import.meta.url), 'utf8').replace(/\/\/[^\n]*/g, '').replace(/'[^'\n]*'/g, "''");
+for (const [o, c] of ['{}', '()', '[]']) { let d = 0; for (const ch of rulesSrc) { d += (ch === o) - (ch === c); assert.ok(d >= 0, `rules: stray ${c}`); } assert.equal(d, 0, `rules: unbalanced ${o}${c}`); }
 console.log('All unit tests passed');
