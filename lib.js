@@ -29,19 +29,30 @@ export function mark(paper, key, ans, passMark, grades) {
   return { correct, wrong, unanswered: none, score, total, pct, grade: grade(pct, grades), pass: pct >= passMark, questions: paper.length };
 }
 export function parseCSV(t) {
+  t = t.replace(/^\uFEFF/, ''); // Excel adds an invisible byte-order mark to the first header
+  const first = t.split(/\r?\n/, 1)[0], cnt = x => first.split(x).length - 1; // Excel in many regions saves with ; or tab instead of ,
+  const d = cnt(';') > cnt(',') && cnt(';') >= cnt('\t') ? ';' : cnt('\t') > cnt(',') ? '\t' : ',';
   const rows = []; let r = [], c = '', q = false;
   for (let i = 0; i < t.length; i++) {
     const ch = t[i];
     if (q) { if (ch === '"') { if (t[i + 1] === '"') { c += '"'; i++; } else q = false; } else c += ch; }
     else if (ch === '"') q = true;
-    else if (ch === ',') { r.push(c); c = ''; }
+    else if (ch === d) { r.push(c); c = ''; }
     else if (ch === '\n' || ch === '\r') { if (ch === '\r' && t[i + 1] === '\n') i++; r.push(c); c = ''; if (r.some(x => x.trim())) rows.push(r); r = []; }
     else c += ch;
   }
   r.push(c); if (r.some(x => x.trim())) rows.push(r);
   return rows;
 }
-const HEAD = { question: 'text', 'option a': 'a', 'option b': 'b', 'option c': 'c', 'option d': 'd', 'correct answer': 'answer', explanation: 'explanation', subject: 'subject', topic: 'topic', class: 'class', difficulty: 'difficulty', marks: 'marks' };
+const HEAD = { question: 'text', 'question text': 'text', questions: 'text', 'option a': 'a', 'option b': 'b', 'option c': 'c', 'option d': 'd', 'options a': 'a', 'options b': 'b', 'options c': 'c', 'options d': 'd', a: 'a', b: 'b', c: 'c', d: 'd', 'correct answer': 'answer', 'correct option': 'answer', correct: 'answer', answer: 'answer', explanation: 'explanation', subject: 'subject', topic: 'topic', class: 'class', difficulty: 'difficulty', marks: 'marks', mark: 'marks' };
+const DIFF = { easy: 'easy', medium: 'medium', moderate: 'medium', average: 'medium', hard: 'hard', difficult: 'hard' };
+// accepts "B", "b.", "(B)", "Option B", or the text of the correct option itself (e.g. "True")
+function normAnswer(q) {
+  const a = (q.answer || '').trim(), m = a.match(/^\(?\s*(?:option\s*)?([A-Da-d])\s*[).:]?\s*$/i);
+  if (m) return m[1].toUpperCase();
+  const k = a.toLowerCase(); if (k) for (const l of 'abcd') if ((q[l] || '').toLowerCase() === k) return l.toUpperCase();
+  return a.toUpperCase();
+}
 export function validateRows(rows, existingTexts = []) {
   const [h, ...body] = rows; const cols = h.map(x => HEAD[x.trim().toLowerCase()]);
   if (!cols.includes('text') || !cols.includes('answer')) throw UE('Header must include Question and Correct Answer columns.');
@@ -49,7 +60,7 @@ export function validateRows(rows, existingTexts = []) {
   return body.map((r, i) => {
     const q = {}; cols.forEach((k, j) => { if (k) q[k] = (r[j] || '').trim(); });
     const errors = [];
-    q.answer = (q.answer || '').toUpperCase(); q.difficulty = (q.difficulty || 'medium').toLowerCase(); q.marks = +q.marks || 1;
+    q.answer = normAnswer(q); q.difficulty = DIFF[(q.difficulty || 'medium').toLowerCase()] || (q.difficulty || '').toLowerCase(); q.marks = +q.marks || 1;
     q.type = (q.a || '').toLowerCase() === 'true' && (q.b || '').toLowerCase() === 'false' && !q.c ? 'truefalse' : 'mcq';
     if (!q.text) errors.push('Missing question');
     if (!q.a || !q.b) errors.push('At least options A and B are required');

@@ -1,4 +1,6 @@
 # Changelog
+## 1.2.1
+- CSV import accepts Excel exports (hidden byte-order mark, `;` or tab delimiters), answers written as `B`, `b.`, `(B)`, `Option B` or the option text, difficulty synonyms (Moderate/Difficult) and short header names.
 ## 1.2.0
 - Question pools: set a pool larger than "questions per student"; each student gets a different seeded random selection (difficulty mix respected). Assigned questions are recorded on the attempt (`qids`) and locked by the rules.
 - Edit question; bulk student/teacher CSV import (generates passwords, downloads a credentials file).

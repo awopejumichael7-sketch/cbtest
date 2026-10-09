@@ -49,4 +49,13 @@ assert.ok(ur[1].errors.includes('Missing name') && ur[1].errors.includes('Invali
 assert.ok(ur[3].errors[0].startsWith('Password')); assert.ok(ur[5].errors.includes('Duplicate email'));
 assert.throws(() => validateUsers([['Foo']]), /Name and Email/); assert.throws(() => validateUsers([])); assert.throws(() => validateUsers([['Name', 'Email'], ...Array(201).fill(['a', 'a@b.co'])]), /at most 200/);
 const pw = genPassword(); assert.match(pw, /^[A-Za-z2-9]{10}$/); assert.notEqual(pw, genPassword());
+// CSV exported from Excel: byte-order mark, semicolon delimiter, answer written several ways, difficulty synonyms
+const xl = '\uFEFFQuestion;Option A;Option B;Option C;Option D;Correct Answer;Explanation;Subject;Topic;Class;Difficulty;Marks\r\n'
+  + 'Q1;a;b;c;d;Option B;;Physics;T;SS2;Moderate;1\r\nQ2;a;b;c;d;c.;;Physics;T;SS2;Difficult;\r\nQ3;True;False;;;True;;Physics;T;SS2;Easy;1\r\nQ4;a;b;c;d;(d);;Physics;T;SS2;;2\r\nQ5;a;b;c;d;b;;Physics;T;SS2;Easy;1\r\nQ6;a;b;c;d;E;;Physics;T;SS2;easy;1\r\n';
+const xr = validateRows(parseCSV(xl));
+assert.deepEqual(xr.map(r => r.ok), [true, true, true, true, true, false]);
+assert.deepEqual(xr.slice(0, 5).map(r => r.q.answer), ['B', 'C', 'A', 'D', 'B']); assert.deepEqual(xr.slice(0, 4).map(r => r.q.difficulty), ['medium', 'hard', 'easy', 'medium']);
+assert.equal(parseCSV('a,b;c\n1,2;3')[1].length, 2); // a tie goes to the comma
+assert.equal(parseCSV('a\tb\tc\n1\t2\t3')[1].length, 3);
+assert.equal(validateRows(parseCSV('Question,A,B,C,D,Answer,Subject\nQ,x,y,z,w,A,Maths'))[0].ok, true); // short header names
 console.log('All unit tests passed');

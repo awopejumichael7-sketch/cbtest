@@ -1,5 +1,5 @@
 // Offline-tolerant app shell. Bump VERSION on each release so users receive updates.
-const VERSION = 'cbt-v2';
+const VERSION = 'cbt-v3';
 const SHELL = ['./', 'index.html', 'app.js', 'lib.js', 'styles.css', 'firebase-config.js', 'manifest.webmanifest', 'privacy.html', 'terms.html', 'icon-192.png', 'icon-512.png'];
 const SDK = 'https://www.gstatic.com/firebasejs/'; // versioned, immutable Firebase SDK files
 self.addEventListener('install', e => e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
