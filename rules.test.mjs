@@ -72,6 +72,18 @@ test('student cannot read another student\'s result or attempt', async () => {
   await assertFails(ctx('studentA').doc(`${O('A')}/results/studentA2_e1`).get());
   await assertSucceeds(ctx('studentA2').doc(`${O('A')}/results/studentA2_e1`).get());
 });
+test('students can look up their OWN not-yet-existing attempt/result (needed to start an exam), but not other students\'', async () => {
+  const d = ctx('studentA');
+  await assertSucceeds(d.doc(`${O('A')}/attempts/studentA_e1`).get());   // does not exist yet: must not error
+  await assertSucceeds(d.doc(`${O('A')}/results/studentA_e1`).get());
+  await assertFails(d.doc(`${O('A')}/attempts/studentA2_e1`).get());     // someone else's (exists)
+  await assertFails(d.doc(`${O('A')}/attempts/studentX_e1`).get());      // someone else's (does not exist): no probing
+  await assertFails(d.doc(`${O('A')}/results/studentB_e1`).get());
+  await assertFails(ctx('studentB').doc(`${O('A')}/attempts/studentB_e1`).get()); // other organization
+  await assertSucceeds(ctx('studentA2').collection(`${O('A')}/results`).where('studentId', '==', 'studentA2').get()); // history / exam list queries
+  await assertFails(d.collection(`${O('A')}/results`).where('studentId', '==', 'studentA2').get());
+  await assertFails(d.collection(`${O('A')}/results`).get());
+});
 test('attempt: valid start succeeds; spoofed identity, wrong id and extended time are rejected', async () => {
   const d = ctx('studentA'), p = `${O('A')}/attempts/studentA_e1`;
   await assertFails(d.doc(`${O('A')}/attempts/studentA2_e1`).set(attempt('studentA2')));
