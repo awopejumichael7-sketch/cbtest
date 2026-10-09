@@ -54,7 +54,11 @@ function normAnswer(q) {
   return a.toUpperCase();
 }
 export function validateRows(rows, existingTexts = []) {
-  const [h, ...body] = rows; const cols = h.map(x => HEAD[x.trim().toLowerCase()]);
+  let [h, ...body] = rows; h = [...h]; while (h.length && !h[h.length - 1].trim()) h.pop(); // ignore empty trailing header cells
+  // Some generators number each row but do not name that column in the header, which shifts every value one place right. Detect and drop it.
+  const numbered = body.filter(r => /^\d+$/.test((r[0] || '').trim()) && r.length > h.length).length;
+  if (body.length && HEAD[(h[0] || '').trim().toLowerCase()] === 'text' && numbered / body.length >= 0.9) body = body.map(r => r.slice(1));
+  const cols = h.map(x => HEAD[x.trim().toLowerCase()]);
   if (!cols.includes('text') || !cols.includes('answer')) throw UE('Header must include Question and Correct Answer columns.');
   const seen = new Set(existingTexts.map(x => x.trim().toLowerCase()));
   return body.map((r, i) => {

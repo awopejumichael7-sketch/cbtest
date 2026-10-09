@@ -1,4 +1,6 @@
 # Changelog
+## 1.2.2
+- CSV import detects an unnamed row-number column (header has a trailing empty cell, rows start 1,2,3) and ignores empty trailing header cells.
 ## 1.2.1
 - CSV import accepts Excel exports (hidden byte-order mark, `;` or tab delimiters), answers written as `B`, `b.`, `(B)`, `Option B` or the option text, difficulty synonyms (Moderate/Difficult) and short header names.
 ## 1.2.0
