@@ -23,6 +23,8 @@ before(async () => {
     await w('users/studentA2', { ...base('A'), role: 'student', name: 'Student A2' });
     await w('users/studentB', { ...base('B'), role: 'student', name: 'Student B' });
     await w('users/adminB', { ...base('B'), role: 'admin', name: 'Admin B' });
+    await w('users/studentT', { ...base('A'), role: 'student', name: 'Theory Student' });
+    await w('users/teacherPhys', { ...base('A'), role: 'teacher', name: 'Physics Teacher', subjects: ['Physics'] });
     await w('users/studentS', { ...base('S'), role: 'student', name: 'Student S' });
     await w(`${O('A')}/questions/q1`, { text: 'Q', answer: 'B' });
     await w(`${O('A')}/exams/e1`, { title: 'E', status: 'published', duration: 30, count: 1, startAt: min(-60), endAt: min(1440) });
@@ -30,6 +32,13 @@ before(async () => {
     await w(`${O('A')}/exams/e1/keys/main`, { map: { q1: { a: 'B' } } });
     await w(`${O('A')}/exams/draft`, { title: 'D', status: 'draft', duration: 30, startAt: min(-60), endAt: min(1440) });
     await w(`${O('A')}/results/studentA2_e1`, { studentId: 'studentA2', pct: 90 });
+    await w(`${O('A')}/exams/e1/keys/theory`, { map: { t1: 'secret marking guide' } });
+    // an exam with theory questions, and a finished attempt on it
+    await w(`${O('A')}/exams/et`, { title: 'Theory exam', status: 'published', duration: 30, count: 0, theoryCount: 1, startAt: min(-60), endAt: min(1440) });
+    await w(`${O('A')}/attempts/studentT_et`, { organizationId: 'A', examId: 'et', studentId: 'studentT', status: 'submitted', answers: {}, qids: [], startedAt: min(-20), endsAt: min(10) });
+    // results awaiting theory marking
+    await w(`${O('A')}/results/rg_phys`, { studentId: 'studentA2', subject: 'Physics', examId: 'e1', theoryStatus: 'pending', score: 3, total: 5, objScore: 3, objTotal: 5, theoryMax: 10, pct: 60 });
+    await w(`${O('A')}/results/rg_chem`, { studentId: 'studentA2', subject: 'Chemistry', examId: 'e1', theoryStatus: 'pending', score: 3, total: 5, objScore: 3, objTotal: 5, theoryMax: 10, pct: 60 });
     // an in-progress attempt created before pools existed (no qids field)
     await w(`${O('A')}/attempts/studentA2_e1`, { organizationId: 'A', examId: 'e1', studentId: 'studentA2', status: 'running', answers: {}, flags: {}, startedAt: min(-1), endsAt: min(29) });
   });
@@ -109,7 +118,7 @@ test('attempt: answers save, but endsAt cannot be extended and keys stay locked 
   await assertSucceeds(d.doc(p).update({ answers: { q1: 'A' } }));
   await assertFails(d.doc(p).update({ endsAt: min(600) })); await assertFails(d.doc(p).update({ studentId: 'studentA2' }));
   await assertFails(d.doc(`${O('A')}/exams/e1/keys/main`).get());
-  await assertFails(d.doc(`${O('A')}/results/studentA_e1`).set({ organizationId: 'A', examId: 'e1', studentId: 'studentA', pct: 100 }));
+  await assertFails(d.doc(`${O('A')}/results/studentA_e1`).set({ organizationId: 'A', examId: 'e1', studentId: 'studentA', pct: 100, theoryStatus: 'none' }));
 });
 test('after submission: answers lock, keys unlock, one result can be created and never edited', async () => {
   const d = ctx('studentA'), p = `${O('A')}/attempts/studentA_e1`, r = `${O('A')}/results/studentA_e1`;
@@ -117,8 +126,9 @@ test('after submission: answers lock, keys unlock, one result can be created and
   await assertFails(d.doc(p).update({ answers: { q1: 'A' } }));
   await assertSucceeds(d.doc(`${O('A')}/exams/e1/keys/main`).get());
   await assertFails(d.doc(`${O('A')}/results/studentA2_e1`).set({ organizationId: 'A', examId: 'e1', studentId: 'studentA', pct: 100 }));
-  await assertSucceeds(d.doc(r).set({ organizationId: 'A', examId: 'e1', studentId: 'studentA', pct: 100 }));
+  await assertSucceeds(d.doc(r).set({ organizationId: 'A', examId: 'e1', studentId: 'studentA', pct: 100, theoryStatus: 'none' }));
   await assertFails(d.doc(r).update({ pct: 0 }));
+  await assertFails(d.doc(`${O('A')}/exams/e1/keys/theory`).get()); // marking guides stay staff-only even after submission
 });
 test('teachers: manage questions in their org only, cannot create users or read other orgs', async () => {
   const d = ctx('teacherA');
@@ -138,4 +148,32 @@ test('only the super admin manages organizations', async () => {
 });
 test('suspended organization: its members are locked out', async () => {
   await assertFails(ctx('studentS').doc(`${O('S')}/exams/e1`).get());
+});
+
+test('theory: a student cannot award themselves marks or skip the pending state', async () => {
+  const d = ctx('studentT'), p = `${O('A')}/results/studentT_et`, ok = { organizationId: 'A', examId: 'et', studentId: 'studentT', pct: 40 };
+  await assertFails(d.doc(p).set({ ...ok, theoryStatus: 'none' }));                       // exam has theory: must start pending
+  await assertFails(d.doc(p).set({ ...ok, theoryStatus: 'graded' }));
+  await assertFails(d.doc(p).set({ ...ok, theoryStatus: 'pending', theory: { t1: { score: 10 } } }));
+  await assertFails(d.doc(p).set({ ...ok, theoryStatus: 'pending', gradedBy: 'studentT' }));
+  await assertFails(d.doc(p).set(ok));                                                    // missing status
+  await assertSucceeds(d.doc(p).set({ ...ok, theoryStatus: 'pending' }));
+  await assertFails(d.doc(p).update({ theoryStatus: 'graded', score: 100 }));             // students cannot edit results at all
+});
+test('theory: marking is limited to admins and teachers of that subject, and to marking fields', async () => {
+  const grade = { theory: { t1: { score: 8 } }, theoryScore: 8, theoryStatus: 'graded', score: 11, total: 15, pct: 73.3, grade: 'A', pass: true, gradedBy: 'x' };
+  await assertSucceeds(ctx('teacherPhys').doc(`${O('A')}/results/rg_phys`).update(grade));
+  await assertFails(ctx('teacherPhys').doc(`${O('A')}/results/rg_chem`).update(grade));   // not their subject
+  await assertFails(ctx('teacherA').doc(`${O('A')}/results/rg_phys`).update(grade));      // teacher with no subjects assigned
+  await assertSucceeds(ctx('adminA').doc(`${O('A')}/results/rg_chem`).update(grade));     // admins mark any subject
+  await assertFails(ctx('adminB').doc(`${O('A')}/results/rg_chem`).update(grade));        // other organization
+  await assertFails(ctx('studentA2').doc(`${O('A')}/results/rg_phys`).update(grade));
+  await assertFails(ctx('adminA').doc(`${O('A')}/results/rg_chem`).update({ studentId: 'studentA', subject: 'Physics' })); // identity fields are immutable
+  await assertFails(ctx('adminA').doc(`${O('A')}/results/rg_chem`).update({ objScore: 99 }));
+  await assertSucceeds(ctx('teacherPhys').doc(`${O('A')}/exams/e1/keys/theory`).get());   // staff can read the marking guide
+});
+test('theory: only admins can change which subjects a teacher marks', async () => {
+  await assertSucceeds(ctx('adminA').doc('users/teacherA').update({ subjects: ['Physics', 'Maths'] }));
+  await assertFails(ctx('teacherA').doc('users/teacherA').update({ subjects: ['Physics'] })); // no self-promotion
+  await assertFails(ctx('adminB').doc('users/teacherA').update({ subjects: ['Physics'] }));
 });

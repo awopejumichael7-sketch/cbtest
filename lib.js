@@ -19,7 +19,8 @@ export function pick(pool, n, d) {
   return shuffle(pool).slice(0, n);
 }
 // paper: [{id,marks}], key: {id:{a}}, ans: {id:'A'}
-export function mark(paper, key, ans, passMark, grades) {
+export function mark(paperAll, key, ans, passMark, grades) {
+  const paper = paperAll.filter(q => q.type !== 'theory'); // theory questions are marked by a teacher
   let correct = 0, wrong = 0, none = 0, score = 0, total = 0;
   for (const q of paper) {
     const m = +q.marks || 1; total += m; const a = ans[q.id];
@@ -44,7 +45,7 @@ export function parseCSV(t) {
   r.push(c); if (r.some(x => x.trim())) rows.push(r);
   return rows;
 }
-const HEAD = { question: 'text', 'question text': 'text', questions: 'text', 'option a': 'a', 'option b': 'b', 'option c': 'c', 'option d': 'd', 'options a': 'a', 'options b': 'b', 'options c': 'c', 'options d': 'd', a: 'a', b: 'b', c: 'c', d: 'd', 'correct answer': 'answer', 'correct option': 'answer', correct: 'answer', answer: 'answer', explanation: 'explanation', subject: 'subject', topic: 'topic', class: 'class', difficulty: 'difficulty', marks: 'marks', mark: 'marks' };
+const HEAD = { question: 'text', type: 'kind', 'question type': 'kind', 'marking guide': 'explanation', 'model answer': 'explanation', 'question text': 'text', questions: 'text', 'option a': 'a', 'option b': 'b', 'option c': 'c', 'option d': 'd', 'options a': 'a', 'options b': 'b', 'options c': 'c', 'options d': 'd', a: 'a', b: 'b', c: 'c', d: 'd', 'correct answer': 'answer', 'correct option': 'answer', correct: 'answer', answer: 'answer', explanation: 'explanation', subject: 'subject', topic: 'topic', class: 'class', difficulty: 'difficulty', marks: 'marks', mark: 'marks' };
 const DIFF = { easy: 'easy', medium: 'medium', moderate: 'medium', average: 'medium', hard: 'hard', difficult: 'hard' };
 // accepts "B", "b.", "(B)", "Option B", or the text of the correct option itself (e.g. "True")
 function normAnswer(q) {
@@ -63,12 +64,13 @@ export function validateRows(rows, existingTexts = []) {
   const seen = new Set(existingTexts.map(x => x.trim().toLowerCase()));
   return body.map((r, i) => {
     const q = {}; cols.forEach((k, j) => { if (k) q[k] = (r[j] || '').trim(); });
-    const errors = [];
+    const errors = [], theory = /^(theory|essay|subjective)$/i.test(q.kind || ''); delete q.kind;
     q.answer = normAnswer(q); q.difficulty = DIFF[(q.difficulty || 'medium').toLowerCase()] || (q.difficulty || '').toLowerCase(); q.marks = +q.marks || 1;
-    q.type = (q.a || '').toLowerCase() === 'true' && (q.b || '').toLowerCase() === 'false' && !q.c ? 'truefalse' : 'mcq';
+    q.type = theory ? 'theory' : (q.a || '').toLowerCase() === 'true' && (q.b || '').toLowerCase() === 'false' && !q.c ? 'truefalse' : 'mcq';
     if (!q.text) errors.push('Missing question');
-    if (!q.a || !q.b) errors.push('At least options A and B are required');
-    if (!/^[A-D]$/.test(q.answer)) errors.push('Correct answer must be A, B, C or D');
+    if (!theory && (!q.a || !q.b)) errors.push('At least options A and B are required');
+    if (theory) Object.assign(q, { a: '', b: '', c: '', d: '', answer: '' }); // theory: Explanation column is the marking guide
+    else if (!/^[A-D]$/.test(q.answer)) errors.push('Correct answer must be A, B, C or D');
     else if (!q[q.answer.toLowerCase()]) errors.push('Correct answer points to an empty option');
     if (!['easy', 'medium', 'hard'].includes(q.difficulty)) errors.push('Difficulty must be easy, medium or hard');
     if (!q.subject) errors.push('Missing subject');
@@ -78,11 +80,11 @@ export function validateRows(rows, existingTexts = []) {
 }
 
 // ---- question pools: every student receives a different random selection from a larger pool ----
-export function poolPlan(e) {
+export function poolPlan(e, allowNone = false) { // allowNone: an exam made only of theory questions
   const dist = { easy: +e.easy || 0, medium: +e.medium || 0, hard: +e.hard || 0 }, tot = dist.easy + dist.medium + dist.hard;
   const n = tot > 0 ? tot : +e.count;
-  if (!(n >= 1)) throw UE('Enter how many questions each student receives.');
-  const ps = Math.max(n, +e.pool || n);
+  if (!(n >= 1) && !(allowNone && n === 0)) throw UE('Enter how many questions each student receives.');
+  const ps = n === 0 ? 0 : Math.max(n, +e.pool || n);
   const pd = tot > 0 ? Object.fromEntries(Object.entries(dist).map(([k, v]) => [k, Math.ceil(v * ps / n)])) : null;
   return { n, ps, dist: tot > 0 ? dist : null, pd };
 }
@@ -96,9 +98,10 @@ export function selectForStudent(paper, n, dist, seed) {
   }
   return shuffle(paper, r).slice(0, n).map(q => q.id);
 }
-export const scopePaper = (paper, qids) => Array.isArray(qids) ? paper.filter(q => qids.includes(q.id)) : paper;
+// every student answers all theory questions; objective questions are the student's own selection (qids)
+export const scopePaper = (paper, qids) => Array.isArray(qids) ? paper.filter(q => q.type === 'theory' || qids.includes(q.id)) : paper;
 // ---- bulk user import ----
-const UHEAD = { name: 'name', 'full name': 'name', email: 'email', password: 'password', class: 'class', 'student id': 'studentId', studentid: 'studentId', id: 'studentId' };
+const UHEAD = { name: 'name', 'full name': 'name', email: 'email', password: 'password', subjects: 'subjects', class: 'class', 'student id': 'studentId', studentid: 'studentId', id: 'studentId' };
 export function genPassword(len = 10) {
   const ch = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789', b = new Uint32Array(len);
   globalThis.crypto.getRandomValues(b); return Array.from(b, x => ch[x % ch.length]).join('');
@@ -118,4 +121,22 @@ export function validateUsers(rows, existingEmails = [], max = 200) {
     if (u.password && u.password.length < 6) errors.push('Password must be at least 6 characters');
     return { line: i + 2, u, errors, ok: !errors.length };
   });
+}
+
+// ---- theory marking: add the teacher's scores to the objective score ----
+// base = {objScore, objTotal}; theoryQs = [{id, marks, text}]; entries = {qid: {score}}. Blank score = not yet marked.
+export function gradeTheory(base, theoryQs, entries, passMark, grades) {
+  const bad = []; let sum = 0, done = 0, max = 0;
+  for (const q of theoryQs) {
+    const m = +q.marks || 1; max += m; const raw = entries[q.id]?.score;
+    if (raw === null || raw === undefined || raw === '') continue;
+    const s = +raw;
+    if (!Number.isFinite(s) || s < 0 || s > m) { bad.push(`"${String(q.text || '').slice(0, 30)}": enter 0 to ${m}`); continue; }
+    sum += s; done++;
+  }
+  if (bad.length) throw UE('Invalid score. ' + bad.join('; '));
+  sum = Math.round(sum * 100) / 100;
+  if (done < theoryQs.length) return { status: 'pending', theoryScore: sum, marked: done };
+  const total = base.objTotal + max, score = Math.round((base.objScore + sum) * 100) / 100, pct = total ? Math.round(score / total * 1000) / 10 : 0;
+  return { status: 'graded', theoryScore: sum, score, total, pct, grade: grade(pct, grades), pass: pct >= passMark };
 }

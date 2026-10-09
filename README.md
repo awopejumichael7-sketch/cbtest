@@ -32,3 +32,10 @@ Rules enforce isolation on the server: every read/write checks `users/{uid}.orga
 - **Rules tests:** `npm install`, then `npm run test:rules` (needs Java). **Lint/unit tests:** `npm run lint`, `npm test`.
 - **CI:** place `ci.yml` at `.github/workflows/ci.yml` (GitHub requires that path).
 - **Legal pages:** edit the `[brackets]` in `privacy.html` / `terms.html` and link them from the settings footer text.
+
+## v1.3 theory questions: design notes and limits
+- Objective marking is still done in the browser at submission (see limitations above), so the *objective* part of a result can be forged by a determined student. **Theory marks cannot**: the rules force new results to start `pending`, and only an admin or the subject's teacher can write marks.
+- Theory questions are the same for every student (objective questions can still be a per-student random selection).
+- Teacher-subject assignments are read when a teacher signs in; after an admin changes them the teacher must sign out and in again.
+- Marking guides are in `keys/theory` (staff-only). Any teacher or admin of the organization can read marking guides, not only the subject's teacher (reads are not restricted by subject; only *writing marks* is).
+- Each theory answer is limited to 6,000 characters. Typing is saved at most every 15 seconds to protect the free Firestore write quota (about 240 writes per student for a one-hour all-theory exam).

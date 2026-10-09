@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { shuffle, rng, hash, pick, mark, grade, parseCSV, validateRows, poolPlan, selectForStudent, scopePaper, validateUsers, genPassword } from './lib.js';
+import { shuffle, rng, hash, pick, mark, grade, parseCSV, validateRows, poolPlan, selectForStudent, scopePaper, validateUsers, genPassword, gradeTheory } from './lib.js';
 // seeded shuffle is deterministic and a permutation
 const a = [1,2,3,4,5,6,7,8], s1 = shuffle(a, rng(hash('u1q1'))), s2 = shuffle(a, rng(hash('u1q1')));
 assert.deepEqual(s1, s2); assert.deepEqual([...s1].sort(), a);
@@ -63,4 +63,30 @@ const num = 'Question,Option A,Option B,Option C,Option D,Correct Answer,Explana
 const nr = validateRows(parseCSV(num)); assert.deepEqual(nr.map(r => r.ok), [true, true]); assert.equal(nr[0].q.text, 'Q one, with comma'); assert.equal(nr[0].q.a, 'a'); assert.equal(nr[1].q.answer, 'A');
 assert.equal(validateRows(parseCSV('No,Question,Option A,Option B,Correct Answer,Subject\n1,Q,x,y,B,Maths'))[0].ok, true); // a named numbering column is simply ignored
 assert.equal(validateRows(parseCSV('Question,Option A,Option B,Correct Answer,Subject\n7,x,y,B,Maths'))[0].q.text, '7'); // a question that really is "7" is not mistaken for numbering
+// ---- theory questions ----
+const mix = [{ id: 'o1', marks: 1 }, { id: 'o2', marks: 1 }, { id: 't1', type: 'theory', marks: 10 }, { id: 't2', type: 'theory', marks: 5 }];
+const mm = mark(mix, { o1: { a: 'A' }, o2: { a: 'B' } }, { o1: 'A', o2: 'C', t1: 'long essay text' }, 50);
+assert.deepEqual([mm.total, mm.correct, mm.wrong, mm.unanswered, mm.questions], [2, 1, 1, 0, 2]); // theory never counts as objective
+assert.deepEqual(scopePaper(mix, ['o1']).map(q => q.id), ['o1', 't1', 't2']); // theory is kept for every student
+assert.deepEqual(scopePaper(mix, []).map(q => q.id), ['t1', 't2']);
+assert.equal(poolPlan({ count: 0, pool: 9 }, true).ps, 0); assert.equal(poolPlan({ count: 0 }, true).n, 0);
+assert.throws(() => poolPlan({ count: 0 }), /how many/); assert.throws(() => poolPlan({ count: 'abc' }, true));
+assert.deepEqual(selectForStudent([], 0, null, 1), []);
+const thq = [{ id: 't1', marks: 10, text: 'Explain X' }, { id: 't2', marks: 5, text: 'Define Y' }], base = { objScore: 3, objTotal: 5 };
+let g = gradeTheory(base, thq, { t1: { score: 7 }, t2: { score: 4 } }, 50);
+assert.deepEqual([g.status, g.theoryScore, g.score, g.total, g.pct, g.grade, g.pass], ['graded', 11, 14, 20, 70, 'A', true]);
+g = gradeTheory(base, thq, { t1: { score: 7 }, t2: { score: null } }, 50); assert.deepEqual([g.status, g.theoryScore, g.marked], ['pending', 7, 1]);
+g = gradeTheory(base, thq, { t1: { score: '' } }, 50); assert.equal(g.status, 'pending'); assert.equal(g.marked, 0);
+g = gradeTheory(base, thq, { t1: { score: 0 }, t2: { score: 0 } }, 50); assert.deepEqual([g.status, g.score, g.pct, g.pass, g.grade], ['graded', 3, 15, false, 'F']); // zero is a real mark
+g = gradeTheory(base, thq, { t1: { score: 0.5 }, t2: { score: 0.25 } }, 50); assert.equal(g.theoryScore, 0.75);
+for (const bad of [11, -1, 'abc', NaN]) assert.throws(() => gradeTheory(base, thq, { t1: { score: bad }, t2: { score: 1 } }, 50), e => e.userMessage === true);
+assert.equal(gradeTheory({ objScore: 0, objTotal: 0 }, thq, { t1: { score: 10 }, t2: { score: 5 } }, 50).pct, 100); // theory-only exam
+assert.equal(gradeTheory(base, [], {}, 50).status, 'graded');
+// CSV: theory rows need no options or answer; objective rows are still strict
+const tc = 'Question,Option A,Option B,Option C,Option D,Correct Answer,Explanation,Subject,Topic,Class,Difficulty,Marks,Type\r\nExplain photosynthesis,,,,,,Light + CO2 -> sugar,Biology,Plants,SS1,hard,10,Theory\r\nObjective one,a,b,,,A,,Biology,Plants,SS1,easy,1,\r\nObjective bad,,,,,,,Biology,,,easy,1,objective\r\nEssay no subject,,,,,,,,,,,5,essay\r\n';
+const tv = validateRows(parseCSV(tc));
+assert.deepEqual(tv.map(r => r.ok), [true, true, false, false]); assert.equal(tv[0].q.type, 'theory'); assert.equal(tv[0].q.marks, 10); assert.equal(tv[0].q.explanation, 'Light + CO2 -> sugar'); assert.equal(tv[0].q.answer, ''); assert.ok(!('kind' in tv[0].q));
+assert.ok(tv[3].errors.includes('Missing subject')); assert.equal(tv[1].q.type, 'mcq');
+// teacher subjects column in bulk import
+assert.equal(validateUsers(parseCSV('Name,Email,Subjects\nTeni,t@x.com,Physics|Maths'))[0].u.subjects, 'Physics|Maths');
 console.log('All unit tests passed');

@@ -13,6 +13,8 @@ service cloud.firestore {
     // an attempt is final once submitted, or once its server-checked end time has passed
     function fin(o, id) { return att(o, id).status == 'submitted' || request.time > att(o, id).endsAt; }
     function ex(o, e) { return get(/databases/$(db)/documents/organizations/$(o)/exams/$(e)).data; }
+    // admins may mark any subject; teachers only subjects an admin assigned to them (users/{uid}.subjects)
+    function canGrade(o, subj) { return inOrg(o) && (me().role == 'admin' || (me().role == 'teacher' && subj in me().get('subjects', []))); }
     function attKeys(d) { return d.keys().hasOnly(['organizationId', 'examId', 'studentId', 'status', 'answers', 'flags', 'qids', 'integrity', 'startedAt', 'endsAt', 'createdAt', 'updatedAt', 'submittedAt']); }
     function near(t, target) { return t >= target - duration.value(120, 's') && t <= target + duration.value(120, 's'); }
 
@@ -37,10 +39,13 @@ service cloud.firestore {
         allow read: if staff(o) || (stud(o) && resource.data.status == 'published');
         allow write: if staff(o) || isSA(); // super admin write is used only to seed demo data
         match /paper/{q} { allow read: if staff(o) || (stud(o) && ex(o, e).status == 'published'); allow write: if staff(o) || isSA(); }
-        match /keys/{k} { allow read: if staff(o) || (stud(o) && fin(o, request.auth.uid + '_' + e)); allow write: if staff(o) || isSA(); }
+        match /keys/{k} { allow read: if staff(o) || (stud(o) && k == 'main' && fin(o, request.auth.uid + '_' + e)); // k == 'theory' (marking guide) is staff-only allow write: if staff(o) || isSA(); }
       }
       match /attempts/{id} {
-        allow read: if staff(o) || (stud(o) && resource.data.studentId == request.auth.uid);
+        // Ids are always '<uid>_<examId>' (enforced on create), so a student can check whether THEIR OWN doc exists yet.
+        // (Testing resource.data on a missing document makes the rule error and deny; that blocked every first attempt.)
+        allow get: if staff(o) || (stud(o) && id.split('_')[0] == request.auth.uid);
+        allow list: if staff(o) || (stud(o) && resource.data.studentId == request.auth.uid);
         allow create: if stud(o) && id == request.auth.uid + '_' + request.resource.data.examId
           && request.resource.data.studentId == request.auth.uid && request.resource.data.organizationId == o
           && request.resource.data.status == 'running'
@@ -58,10 +63,19 @@ service cloud.firestore {
           && resource.data.get('qids', null) == request.resource.data.get('qids', null);
       }
       match /results/{id} {
-        allow read: if staff(o) || (stud(o) && resource.data.studentId == request.auth.uid);
+        // Ids are always '<uid>_<examId>' (enforced on create), so a student can check whether THEIR OWN doc exists yet.
+        // (Testing resource.data on a missing document makes the rule error and deny; that blocked every first attempt.)
+        allow get: if staff(o) || (stud(o) && id.split('_')[0] == request.auth.uid);
+        allow list: if staff(o) || (stud(o) && resource.data.studentId == request.auth.uid);
         // Spark-plan limitation: score is computed in the browser (see README). One write only; no updates.
         allow create: if stud(o) && id == request.auth.uid + '_' + request.resource.data.examId
-          && request.resource.data.studentId == request.auth.uid && request.resource.data.organizationId == o && fin(o, id);
+          && request.resource.data.studentId == request.auth.uid && request.resource.data.organizationId == o && fin(o, id)
+          // a student can never award themselves theory marks: new results start 'pending' (or 'none' when the exam has no theory)
+          && request.resource.data.theoryStatus == (ex(o, request.resource.data.examId).get('theoryCount', 0) > 0 ? 'pending' : 'none')
+          && !('theory' in request.resource.data.keys()) && !('gradedBy' in request.resource.data.keys());
+        // marking: only fields touched by theory grading may change
+        allow update: if canGrade(o, resource.data.subject)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['theory', 'theoryScore', 'theoryStatus', 'score', 'total', 'pct', 'grade', 'pass', 'gradedBy', 'gradedAt']);
         allow delete: if adm(o);
       }
     }
